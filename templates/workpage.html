@@ -1,0 +1,281 @@
+{% load static %}
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Visual Metrics</title>
+    <link href="{% static 'css/workpage.css' %}" rel="stylesheet" />
+    <!-- <link href="{% static 'css/loader.css' %}" rel="stylesheet"> -->
+  </head>
+
+  <body>
+    <div class="tableau-container">
+      <div class="draggable-container sidebar">
+        <div class="dimension">Dimensions</div>
+        {% for row in data %}
+                <p class="shallow-draggable" draggable="true">{{row}}</p>
+        {% endfor %}
+      </div>
+
+      <div class="main-content">
+        <div class="inner-content">
+            <div class="input-rows">
+                <div class="title-w-chips">
+                  <span class="title">Columns</span>
+                  <div class="chips-container input" id="columns">
+                    <!-- Chips will be added here -->
+                  </div>
+                </div>
+                <div class="title-w-chips">
+                  <span class="title">Rows</span>
+                  <div class="chips-container input" id="rows">
+                    <!-- Chips will be added here -->
+                  </div>
+                  <!-- <div style="max-width: 600px; margin: 0 auto;border:2px solid red">
+                    <canvas id="chart"></canvas>
+                  </div> -->
+                </div>
+            </div>
+            <div class="dropdown">
+                <button class="dropbtn">Select Chart Type</button>
+                    <div id="chartDropdown" class="dropdown-content">
+                        <button id="graph1" value="scatter"><img src="{% static 'img/scatter.png' %}" width="100%" height="30px"></button>
+                        <button id="graph2" value="bar"><img src="{% static 'img/bar-chart.png' %}" width="100%" height="30px"></button>
+                        <button id="graph3" value="pie"><img src="{% static 'img/pie-chart.png' %}" width="100%" height="30px"></button>
+                        <button id="graph4" value="hist"><img src="{% static 'img/histogram.png' %}" width="100%" height="30px"></button>
+                        <button id="graph5" value="box"><img src="{% static 'img/box.png' %}" width="100%" height="30px"></button>
+                        <button id="graph6" value="kde"><img src="{% static 'img/kde.png' %}" width="100%" height="30px"></button>
+                    </div>
+              </div>
+        </div>
+        <div id="table-container"></div>
+     
+        {% if plotly_graph_exists %}
+        <div id="iframe-container"></div>
+        {% else %}
+        <p>No Plotly graph available.</p>
+        {% endif %}
+
+    </div>
+    </div>
+    <!-- <script src="{% static 'js/script.js' %}"></script> -->
+    <script>
+           
+      document.addEventListener("DOMContentLoaded", () => {
+          const draggables = document.querySelectorAll(".shallow-draggable");
+          const containers = document.querySelectorAll(".chips-container.input");
+          const tableContainer = document.getElementById("iframe-container");
+          const iframeContainer = document.getElementById("iframe-container");
+          const data = JSON.parse('{{ data_json | safe }}');
+          var labels, graphData;
+
+          let chartInstance = null;
+          let graphDetails = [];
+          let isDragging = false;
+          let draggingElement;
+          let activeContainer = null;
+
+          draggables.forEach((draggable) => {
+              draggable.addEventListener("dragstart", (e) => {
+                  e.dataTransfer.setData("text/plain", draggable.innerText); // Set the data to be dragged
+                  draggable.classList.add("dragging");
+                  isDragging = true;
+                  draggingElement = draggable;
+              });
+
+              draggable.addEventListener("dragend", () => {
+                  draggable.classList.remove("dragging");
+                  isDragging = false;
+              });
+          });
+
+          containers.forEach((container) => {
+              container.addEventListener("dragover", function (e) {
+                  e.preventDefault();
+                  if (activeContainer !== container) {
+                      activeContainer = container;
+                      container.addEventListener("drop", handleDropEvent);
+                  }
+              });
+          });
+
+          
+          document.getElementById("graph").addEventListener("click", (e) => {
+            const chartType = e.target.value;
+            const graphDetails = getGraphDetailsFromPage();
+            console.log(graphDetails);
+            saveGraphDetails(graphDetails, chartType);
+          });
+          
+        function selectChart(chartType) {
+            // Gather the dropped field data
+            const graphDetails = getGraphDetailsFromPage();
+            console.log(graphDetails)
+            // Save the graph details along with the chart type
+            saveGraphDetails(graphDetails, chartType);
+        }
+        
+        function getGraphDetailsFromPage() {
+            const draggables = document.querySelectorAll(".shallow-draggable");
+            const graphDetails = [];
+            draggables.forEach((draggable) => {
+                graphDetails.push({ value: draggable.innerText });
+            });
+            return graphDetails;
+        }
+
+          function handleDropEvent(e) {
+              e.preventDefault();
+              const container = e.currentTarget;
+              const afterElement = getDragAfterElement(container, e.clientY);
+              const dragging = document.querySelector(".dragging");
+
+              if (isDragging && dragging === draggingElement) {
+                  const chipValue = e.dataTransfer.getData("text/plain"); // Get the dragged data
+                  const chip = createChipElement(chipValue);
+                  if (afterElement == null) {
+                      container.appendChild(chip);
+                  } else {
+                      container.insertBefore(chip, afterElement);
+                  }
+
+                  // Update graphDetails and make the POST request
+                  graphDetails.push({ id: container.id, value: chipValue });
+                  updateGraphDetailsOnPage(graphDetails);
+                  saveGraphDetails(graphDetails);
+              }
+
+              activeContainer = null;
+              container.removeEventListener("drop", handleDropEvent);
+          }
+
+          function handleRemoveChip(e) {
+              const removeButton = e.currentTarget;
+              const chip = removeButton.closest(".chip");
+              const chipValue = chip.querySelector(".chip-text").textContent;
+
+              // Find and remove the corresponding chip from the graphDetails array
+              graphDetails = graphDetails.filter((detail) => detail.value !== chipValue);
+              chip.remove();
+              tableContainer.innerHTML = "";
+              iframeContainer.innerHTML = ""
+
+              // Update graphDetails and make the POST request
+              updateGraphDetailsOnPage(graphDetails);
+              saveGraphDetails(graphDetails);
+          }
+
+          function updateGraphDetailsOnPage(graphDetails) {
+
+              if (chartInstance) {
+                  chartInstance.destroy();
+              }
+              // Find values for labels and graphData
+              graphDetails.forEach((detail) => {
+                  if (detail.id === 'columns') {
+                      labels = data[`${detail.value}`];
+                      console.log({ columns: labels })
+
+                  } else if (detail.id === 'rows') {
+                      graphData = data[`${detail.value}`];
+                      console.log({ rows: graphData })
+                  }
+              });
+              const removeButtons = document.querySelectorAll(".remove-chip");
+              removeButtons.forEach((button) => {
+                  button.removeEventListener("click", handleRemoveChip); // Clean up previous event listeners
+                  button.addEventListener("click", handleRemoveChip);
+              });
+
+              // Update chart
+
+          }
+ 
+          function saveGraphDetails(graphDetails,chartType) {
+              // Make the POST request to save graphDetails
+              fetch("/workpage", {
+                  method: "POST",
+                  headers: {
+                      "Content-Type": "application/json",
+                      "X-CSRFToken": getCSRFToken(),
+                  },
+                  body: JSON.stringify({ data: graphDetails, chartType: chartType}),
+              })
+                  .then((response) => response.json())
+                  .then((data) => {
+                      // Handle the response data
+                      if (data.status === "success") {
+                          // Update the UI with the new graphDetails
+                          graphDetails = data.graphDetails;
+                          tableContainer.innerHTML = data.table_html;
+                          if(!data.table_html){
+                            tableContainer.innerHTML = ""
+                          }
+  
+                          if(data.plotly_graph_exists){
+                            iframeContainer.innerHTML = `<iframe src="{% static 'plotly_graph.html' %}" width="100%" height="600"></iframe>`
+                          }
+                          updateGraphDetailsOnPage(graphDetails);
+
+                      }
+                  })
+                  .catch((error) => {
+                      // Handle errors
+                  });
+          }
+
+          function getCSRFToken() {
+              const csrfCookie = document.cookie
+                  .split(";")
+                  .find((cookie) => cookie.trim().startsWith("csrftoken="));
+              if (csrfCookie) {
+                  return csrfCookie.split("=")[1];
+              }
+              return "";
+          } 
+
+          function createChipElement(text) {
+              const chip = document.createElement("div");
+              chip.classList.add("chip");
+
+              const chipText = document.createElement("span");
+              chipText.classList.add("chip-text");
+              chipText.textContent = text;
+
+              const removeChip = document.createElement("span");
+              removeChip.classList.add("remove-chip");
+              removeChip.textContent = "×";
+              removeChip.addEventListener("click", handleRemoveChip);
+
+              chip.appendChild(chipText);
+              chip.appendChild(removeChip);
+
+              return chip;
+          }
+
+          function getDragAfterElement(container, y) {
+              const draggableElements = [...container.querySelectorAll(".chip")];
+
+              return draggableElements.reduce(
+                  (closest, child) => {
+                      const box = child.getBoundingClientRect();
+                      const offset = y - box.top - box.height / 2;
+                      if (offset < 0 && offset > closest.offset) {
+                          return { offset: offset, element: child };
+                      } else {
+                          return closest;
+                      }
+                  },
+                  { offset: Number.NEGATIVE_INFINITY }
+              ).element;
+          }
+
+          // Call the initial updateGraphDetailsOnPage function to set up the chart
+          updateGraphDetailsOnPage(graphDetails);
+      });
+
+  </script>
+  </body>
+</html>
